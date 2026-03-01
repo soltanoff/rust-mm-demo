@@ -1,5 +1,4 @@
-use crate::sync::pause;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::{AtomicBool, Ordering, pause};
 
 /// Test-And-TAS SpinLock
 /// (TAS -> Test-And-Set)
@@ -50,15 +49,21 @@ mod tests {
     use std::cell::UnsafeCell;
     use std::sync::Arc;
 
+    struct SharedData<T> {
+        lock: SpinLock,
+        value: UnsafeCell<T>,
+    }
+
+    unsafe impl<T> Sync for SharedData<T> {}
+
     #[test]
-    fn test_basic_lock_unlock() {
+    fn test_multiple_sequential_locks() {
         let lock = SpinLock::new();
 
-        lock.lock();
-        lock.unlock();
-
-        lock.lock();
-        lock.unlock();
+        for _ in 0..100 {
+            lock.lock();
+            lock.unlock();
+        }
     }
 
     #[test]
@@ -77,39 +82,70 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_sequential_locks() {
-        let lock = SpinLock::new();
+    fn test_two_threads_no_data_race() {
+        let shared = Arc::new(SharedData {
+            lock: SpinLock::new(),
+            value: UnsafeCell::new(0u32),
+        });
 
-        for _ in 0..100 {
-            lock.lock();
-            lock.unlock();
-        }
+        let shared2 = Arc::clone(&shared);
+        let t1 = std::thread::spawn(move || {
+            shared2.lock.lock();
+            unsafe { *shared2.value.get() += 1 };
+            shared2.lock.unlock();
+        });
+
+        shared.lock.lock();
+        unsafe { *shared.value.get() += 1 };
+        shared.lock.unlock();
+
+        t1.join().unwrap();
+
+        assert_eq!(unsafe { *shared.value.get() }, 2);
     }
 
-    struct SharedCounter {
-        lock: SpinLock,
-        value: UnsafeCell<u64>,
-    }
+    #[test]
+    fn test_mutual_exclusion() {
+        let shared = Arc::new(SharedData {
+            lock: SpinLock::new(),
+            value: UnsafeCell::new(String::new()),
+        });
 
-    unsafe impl Sync for SharedCounter {}
+        let shared2 = Arc::clone(&shared);
+        let t1 = std::thread::spawn(move || {
+            shared2.lock.lock();
+            unsafe { (*shared2.value.get()).push('A') };
+            shared2.lock.unlock();
+        });
+
+        shared.lock.lock();
+        unsafe { (*shared.value.get()).push('B') };
+        shared.lock.unlock();
+
+        t1.join().unwrap();
+
+        let val = unsafe { &*shared.value.get() };
+        assert!(val == "AB" || val == "BA", "unexpected value: {}", val);
+    }
 
     #[test]
     fn test_concurrent_increments() {
-        let counter = Arc::new(SharedCounter {
+        let shared = Arc::new(SharedData {
             lock: SpinLock::new(),
-            value: UnsafeCell::new(0),
+            value: UnsafeCell::new(0u64),
         });
+
         let num_threads = 3;
         let increments_per_thread = 16750;
 
         let handles: Vec<_> = (0..num_threads)
             .map(|_| {
-                let counter = Arc::clone(&counter);
+                let shared = Arc::clone(&shared);
                 std::thread::spawn(move || {
                     for _ in 0..increments_per_thread {
-                        counter.lock.lock();
-                        unsafe { *counter.value.get() += 1 };
-                        counter.lock.unlock();
+                        shared.lock.lock();
+                        unsafe { *shared.value.get() += 1 };
+                        shared.lock.unlock();
                     }
                 })
             })
@@ -120,8 +156,8 @@ mod tests {
         }
 
         assert_eq!(
-            unsafe { *counter.value.get() },
-            num_threads * increments_per_thread // ожидаем 100500 :)
+            unsafe { *shared.value.get() },
+            num_threads * increments_per_thread
         );
     }
 }
@@ -138,8 +174,22 @@ mod loom_tests {
         value: UnsafeCell<T>,
     }
 
+    unsafe impl<T> Sync for SharedData<T> {}
+
     #[test]
-    fn test_concurrent_logic() {
+    fn loom_multiple_sequential_locks() {
+        loom::model(|| {
+            let lock = SpinLock::new();
+
+            for _ in 0..100 {
+                lock.lock();
+                lock.unlock();
+            }
+        });
+    }
+
+    #[test]
+    fn loom_concurrent_logic() {
         loom::model(|| {
             let v1 = loom::sync::Arc::new(SpinLock::new());
             let v2 = v1.clone();

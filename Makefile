@@ -1,6 +1,8 @@
 pre-commit: format check test build
 
 tools:
+	#rustup toolchain install nightly
+	#rustup component add miri --toolchain nightly
 	rustup +nightly component add miri
 
 format:
