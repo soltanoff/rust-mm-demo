@@ -1,0 +1,10 @@
+[package]
+name = "rust-mm-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+loom = { version = "0.7", optional = true }
+
+[features]
+sanitizers = ["dep:loom"]
