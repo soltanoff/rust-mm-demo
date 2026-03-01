@@ -36,15 +36,55 @@
   - [24. TL;DR](#24-tldr)
 - [Ссылки](#ссылки)
 
+## Подготовка к работе
+
+Для начало работы поставьте необходимые зависимости: 
+
+```shell
+make tools
+```
+
 # О тестах
 
-В этом репозитории используется [Loom](https://docs.rs/loom/latest/loom/). Loom — это инструмент для тестирования
-параллельных/конкурентных программ.
+## cargo test
+
+Ничего необычного, просто наивные базовые тесты. 
+
+## Loom
+
+Это инструмент для тестирования параллельных/конкурентных программ.
 
 На высоком уровне он выполняет тесты многократно, перебирая возможные параллельные исполнения каждого теста в
 соответствии с тем, что составляет действительные исполнения
 согласно [модели памяти C11](https://en.cppreference.com/w/cpp/atomic/memory_order).
 Затем он использует методы сокращения состояния, чтобы избежать комбинаторного взрыва количества возможных исполнений.
+
+## Miri
+
+Это интерпретатор для Rust MIR (`Mid-level Intermediate Representation`), который может обнаруживать определенные
+классы undefined behavior (**UB**) в Rust-коде, включая:
+
+- Use-after-free
+- Data races
+- Нарушения алиасинга (`&` и `&mut`)
+- Использование неинициализированной памяти
+- Нарушения модели памяти
+
+Пример выхлопа при обнаружении data race: 
+
+```shell
+MIRIFLAGS=-Zmiri-backtrace=full cargo +nightly miri test
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/main.rs (target/miri/aarch64-apple-darwin/debug/deps/rust_mm_demo-77b44f1f6151d2f7)
+
+running 4 tests
+test spinlock::tests::test_basic_lock_unlock ... ok
+test spinlock::tests::test_concurrent_increments ... error: Undefined Behavior: Data race detected between (1) non-atomic write on thread `unnamed-3` and (2) non-atomic read on thread `unnamed-4` at alloc46555+0x10
+   --> src/spinlock/mod.rs:111:34
+    |
+111 |                         unsafe { *counter.value.get() += 1 };
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^ (2) just happened here
+```
 
 # Кратко о главном
 

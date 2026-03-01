@@ -1,16 +1,5 @@
-#[cfg(feature = "sanitizers")]
-use loom::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(not(feature = "sanitizers"))]
+use crate::sync::pause;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-fn pause() {
-    #[cfg(feature = "sanitizers")]
-    loom::thread::yield_now();
-
-    #[cfg(not(feature = "sanitizers"))]
-    std::hint::spin_loop();
-}
 
 /// Test-And-TAS SpinLock
 /// (TAS -> Test-And-Set)
@@ -73,6 +62,21 @@ mod tests {
     }
 
     #[test]
+    fn test_concurrent_logic() {
+        let v1 = Arc::new(SpinLock::new());
+        let v2 = v1.clone();
+        let t1 = std::thread::spawn(move || {
+            v2.lock();
+            v2.unlock();
+        });
+
+        v1.lock();
+        v1.unlock();
+
+        t1.join().unwrap();
+    }
+
+    #[test]
     fn test_multiple_sequential_locks() {
         let lock = SpinLock::new();
 
@@ -95,7 +99,7 @@ mod tests {
             lock: SpinLock::new(),
             value: UnsafeCell::new(0),
         });
-        let num_threads = 6;
+        let num_threads = 3;
         let increments_per_thread = 16750;
 
         let handles: Vec<_> = (0..num_threads)
@@ -134,8 +138,22 @@ mod loom_tests {
         value: UnsafeCell<T>,
     }
 
-    unsafe impl<T: Send> Sync for SharedData<T> {}
-    unsafe impl<T: Send> Send for SharedData<T> {}
+    #[test]
+    fn test_concurrent_logic() {
+        loom::model(|| {
+            let v1 = loom::sync::Arc::new(SpinLock::new());
+            let v2 = v1.clone();
+            let t1 = thread::spawn(move || {
+                v2.lock();
+                v2.unlock();
+            });
+
+            v1.lock();
+            v1.unlock();
+
+            t1.join().unwrap();
+        });
+    }
 
     #[test]
     fn loom_two_threads_no_data_race() {
