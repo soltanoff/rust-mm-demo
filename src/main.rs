@@ -1,5 +1,6 @@
 mod spinlock;
 mod spscringbuffer;
+mod spscringbufferv2;
 mod sync;
 
 fn main() {
