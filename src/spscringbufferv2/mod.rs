@@ -1,22 +1,26 @@
 use crate::sync::{AtomicUsize, Ordering};
 
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::ptr;
 
-/// Single-Producer-Single-Consumer Ring Buffer
+/// Single-Producer-Single-Consumer Ring Buffer.
+/// (cache line optimized)
 #[allow(dead_code)]
-pub struct SPSCRingBuffer<T> {
+pub struct SPSCRingBufferV2<T> {
     capacity: usize,
     buffer: UnsafeCell<Box<[T]>>,
     head: AtomicUsize,
     tail: AtomicUsize,
+    // Cache line optimisations
+    cached_head: Cell<usize>,
+    cached_tail: Cell<usize>,
 }
 
-unsafe impl<T: Send> Send for SPSCRingBuffer<T> {}
-unsafe impl<T: Send> Sync for SPSCRingBuffer<T> {}
+unsafe impl<T: Send> Send for SPSCRingBufferV2<T> {}
+unsafe impl<T: Send> Sync for SPSCRingBufferV2<T> {}
 
 #[allow(dead_code)]
-impl<T> SPSCRingBuffer<T>
+impl<T> SPSCRingBufferV2<T>
 where
     T: Copy + Default,
 {
@@ -27,12 +31,22 @@ where
             buffer: UnsafeCell::new(buffer),
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
+            // Cache line optimisations
+            cached_head: Cell::new(0),
+            cached_tail: Cell::new(0),
         }
     }
 
     pub fn try_produce(&self, value: T) -> bool {
-        let current_head = self.head.load(Ordering::Acquire);
         let current_tail = self.tail.load(Ordering::Relaxed);
+
+        // Cache line optimizations
+        // Обновлять cached_head только если буфер *кажется* заполненным на основе устаревшего кэша
+        if self.next(current_tail) == self.cached_head.get() {
+            self.cached_head.set(self.head.load(Ordering::Acquire));
+        }
+
+        let current_head = self.cached_head.get();
 
         if self.is_full(current_head, current_tail) {
             return false;
@@ -50,7 +64,14 @@ where
 
     pub fn try_consume(&self) -> Option<T> {
         let current_head = self.head.load(Ordering::Relaxed);
-        let current_tail = self.tail.load(Ordering::Acquire);
+
+        // Cache line optimizations
+        // Обновлять cached_head только если буфер *кажется* заполненным на основе устаревшего кэша
+        if current_head == self.cached_tail.get() {
+            self.cached_tail.set(self.tail.load(Ordering::Acquire));
+        }
+
+        let current_tail = self.cached_tail.get();
 
         if self.is_empty(current_head, current_tail) {
             return None;
@@ -105,7 +126,7 @@ mod tests {
 
     #[test]
     fn test_concurrent_reads_and_writes() {
-        let ring_buffer: Arc<SPSCRingBuffer<i32>> = Arc::new(SPSCRingBuffer::new(42));
+        let ring_buffer: Arc<SPSCRingBufferV2<i32>> = Arc::new(SPSCRingBufferV2::new(42));
         let producer_buffer = Arc::clone(&ring_buffer);
         let consumer_buffer = Arc::clone(&ring_buffer);
 

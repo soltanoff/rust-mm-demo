@@ -1,3 +1,6 @@
+RUN_MIRI = MIRIFLAGS=-Zmiri-backtrace=full cargo +nightly miri test
+
+
 pre-commit: format check test build
 
 tools:
@@ -18,7 +21,19 @@ build:
 run:
 	cargo run --release
 
-test:
+base-test:
 	cargo test --release
+
+loom:
 	RUST_BACKTRACE=full cargo test --features sanitizers --release
-	MIRIFLAGS=-Zmiri-backtrace=full cargo +nightly miri test
+
+miri-spinlock:
+	$(RUN_MIRI) spinlock
+
+miri-spscringbuffer:  # v1 and v2
+	$(RUN_MIRI) spscringbuffer
+
+miri:
+	$(RUN_MIRI)
+
+test: base-test loom miri
