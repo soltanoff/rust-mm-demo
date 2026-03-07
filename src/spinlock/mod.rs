@@ -15,8 +15,6 @@ impl SpinLock {
         }
     }
 
-    // TODO: расписать схему message passing и явно подсветить почему TAS SL перешел в TA-TAS SL
-    //       и почему weak и почему Release-Acquire
     pub fn lock(&self) {
         // RWM операция
         while self
@@ -24,7 +22,6 @@ impl SpinLock {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            // TODO: описать зачем оно надо
             // Optimization: Read-only операция
             while self.locked.load(Ordering::Relaxed) {
                 pause();
