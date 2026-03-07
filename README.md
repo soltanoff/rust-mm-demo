@@ -9,6 +9,10 @@
 ## Содержание
 
 - [О тестах](#о-тестах)
+- [Закрепление знаний](#закрепление-знаний)
+  - [SpinLock](src/spinlock/README.md)
+  - [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
+  - [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
 - [Кратко о главном](#кратко-о-главном)
   - [1. Mutual Exclusion](#1-mutual-exclusion)
   - [2. Точка с запятой](#2-точка-с-запятой)
@@ -85,6 +89,19 @@ test spinlock::tests::test_concurrent_increments ... error: Undefined Behavior: 
 111 |                         unsafe { *counter.value.get() += 1 };
     |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^ (2) just happened here
 ```
+
+# Закрепление знаний
+
+В репозитории представлены структуры, в рамках которых были произведены оптимизации с использованием моделей памяти. 
+К каждой реализации добавлено подробное обоснование в соответствующих `README.md`-файлах, опирающиеся на основную 
+информацию из основного `README.md`. Рекомендуется сначала познакомиться с основным материалом, чтобы после понимать 
+на базе каких фундаментальных догм была описана реализация. 
+
+Структуры: 
+
+- [SpinLock](src/spinlock/README.md)
+- [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
+- [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
 
 # Кратко о главном
 
