@@ -1,3 +1,4 @@
+mod lazy;
 mod spinlock;
 mod spscringbuffer;
 mod spscringbufferv2;
