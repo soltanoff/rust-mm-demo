@@ -1,3 +1,14 @@
+<div align="center">
+
+![Unsafe Usage](https://img.shields.io/badge/unsafe%20usages-33-brown?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Blocks](https://img.shields.io/badge/unsafe%20blocks-25-red?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Impls](https://img.shields.io/badge/unsafe%20impl-8-orange?style=for-the-badge&logo=rust&logoColor=white)
+![Files with Unsafe](https://img.shields.io/badge/files%20with%20unsafe-4%20%2F%206-blueviolet?style=for-the-badge&logo=rust&logoColor=white)
+
+> *Да, мы знаем что делаем. Наверное. (c)*
+
+</div>
+
 # Играемся в модели памяти на Rust
 
 Это игрушечный репозиторий :)
