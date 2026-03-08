@@ -37,6 +37,7 @@ jobs:
   loom:
     name: loom
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -46,7 +47,7 @@ jobs:
   miri-spinlock:
     name: miri / SpinLock
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
@@ -58,7 +59,7 @@ jobs:
   miri-spscringbuffer:
     name: miri / SPSCRingBuffer + SPSCRingBufferV2
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
@@ -70,7 +71,7 @@ jobs:
   miri-lazy:
     name: miri / Lazy
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
