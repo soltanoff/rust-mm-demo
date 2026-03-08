@@ -76,7 +76,9 @@
 
 ### PL MM
 
-- [Java Memory Model](https://docs.oracle.com/javase/specs/jls/se7/html/jls-17.html#jls-17.4)
+- Java Memory Model
+  - [JLS §17.4 – Memory Model](https://docs.oracle.com/javase/specs/jls/se25/html/jls-17.html#jls-17.4)
+  - [JLS §8.3.1.4 – volatile Fields](https://docs.oracle.com/javase/specs/jls/se25/html/jls-8.html#jls-8.3.1.4)
 - [Go Memory Model](https://golang.org/ref/mem), [Don't be clever](https://golang.org/ref/mem#tmp_1), [Updating the Go MM](https://research.swtch.com/gomm)
 - [LLVM Atomic Instructions and Concurrency Guide](https://llvm.org/docs/Atomics.html)
 - [Multicore OCaml Memory Model](https://v2.ocaml.org/manual/memorymodel.html), [Bounding Data Races in Space and Time](https://kcsrk.info/papers/pldi18-memory.pdf)
