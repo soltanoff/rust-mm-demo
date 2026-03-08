@@ -1,4 +1,4 @@
-use crate::spinlock::SpinLock;
+use crate::spinlock::{SpinLock, SpinLockGuard};
 use crate::sync::{AtomicPtr, Ordering};
 use std::cell::UnsafeCell;
 
@@ -31,7 +31,7 @@ impl<T> Lazy<T> {
 
         // Slow path
         if ptr.is_null() {
-            self.mutex.lock();
+            let _guard = SpinLockGuard::new(&self.mutex);
 
             // Double-check после захвата mutex
             ptr = self.cell.load(Ordering::Relaxed);
@@ -41,8 +41,6 @@ impl<T> Lazy<T> {
                     self.cell.store(ptr, Ordering::Release);
                 }
             }
-
-            self.mutex.unlock();
         }
 
         unsafe { &*ptr }
@@ -51,7 +49,6 @@ impl<T> Lazy<T> {
 
 impl<T> Drop for Lazy<T> {
     fn drop(&mut self) {
-        self.mutex.unlock();
         let ptr = self.cell.load(Ordering::Relaxed);
         if !ptr.is_null() {
             unsafe {
