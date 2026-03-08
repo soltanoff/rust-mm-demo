@@ -33,6 +33,9 @@ miri-spinlock:
 miri-spscringbuffer:  # v1 and v2
 	$(RUN_MIRI) spscringbuffer
 
+miri-lazy:
+	$(RUN_MIRI) lazy
+
 miri:
 	$(RUN_MIRI)
 

@@ -13,6 +13,7 @@
   - [SpinLock](src/spinlock/README.md)
   - [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
   - [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
+  - [Lazy Initializer](src/lazy/README.md)
 - [Кратко о главном](#кратко-о-главном)
   - [1. Mutual Exclusion](#1-mutual-exclusion)
   - [2. Точка с запятой](#2-точка-с-запятой)
@@ -106,6 +107,7 @@ test spinlock::tests::test_concurrent_increments ... error: Undefined Behavior: 
 - [SpinLock](src/spinlock/README.md)
 - [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
 - [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
+- [Lazy Initializer](src/lazy/README.md)
 
 # Кратко о главном
 

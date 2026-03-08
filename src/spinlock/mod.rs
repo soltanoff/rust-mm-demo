@@ -8,6 +8,11 @@ pub struct SpinLock {
 }
 
 #[allow(dead_code)]
+pub struct SpinLockGuard<'a> {
+    lock: &'a SpinLock,
+}
+
+#[allow(dead_code)]
 impl SpinLock {
     pub fn new() -> Self {
         Self {
@@ -34,9 +39,23 @@ impl SpinLock {
     }
 }
 
+#[allow(dead_code)]
+impl<'a> SpinLockGuard<'a> {
+    pub fn new(lock: &'a SpinLock) -> Self {
+        lock.lock();
+        SpinLockGuard { lock }
+    }
+}
+
 impl Drop for SpinLock {
     fn drop(&mut self) {
         self.unlock();
+    }
+}
+
+impl<'a> Drop for SpinLockGuard<'a> {
+    fn drop(&mut self) {
+        self.lock.unlock();
     }
 }
 
