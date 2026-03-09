@@ -152,3 +152,43 @@ mod tests {
         consumer_handle.join().unwrap();
     }
 }
+
+#[cfg(feature = "sanitizers")]
+mod loom_tests {
+    use super::*;
+    use loom::sync::Arc;
+    use loom::thread;
+
+    #[test]
+    fn loom_concurrent_reads_and_writes() {
+        loom::model(|| {
+            let ring_buffer: Arc<SPSCRingBufferV2<i32>> = Arc::new(SPSCRingBufferV2::new(2));
+            let producer_buffer = Arc::clone(&ring_buffer);
+            let consumer_buffer = Arc::clone(&ring_buffer);
+
+            // АККУРАТНО! Большое значение порождает больше переборов исполнений согласно С11
+            let values_count = 2;
+
+            let producer_handle = thread::spawn(move || {
+                for i in 0..values_count {
+                    while !producer_buffer.try_produce(i) {
+                        #[cfg(feature = "sanitizers")]
+                        loom::thread::yield_now();
+                    }
+                }
+            });
+
+            let consumer_handle = thread::spawn(move || {
+                for _ in 0..values_count {
+                    while consumer_buffer.try_consume().is_none() {
+                        #[cfg(feature = "sanitizers")]
+                        loom::thread::yield_now();
+                    }
+                }
+            });
+
+            producer_handle.join().unwrap();
+            consumer_handle.join().unwrap();
+        });
+    }
+}
