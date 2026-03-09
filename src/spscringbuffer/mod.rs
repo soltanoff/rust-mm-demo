@@ -151,7 +151,6 @@ mod loom_tests {
             let producer_handle = thread::spawn(move || {
                 for i in 0..values_count {
                     while !producer_buffer.try_produce(i) {
-                        #[cfg(feature = "sanitizers")]
                         loom::thread::yield_now();
                     }
                 }
@@ -160,7 +159,6 @@ mod loom_tests {
             let consumer_handle = thread::spawn(move || {
                 for _ in 0..values_count {
                     while consumer_buffer.try_consume().is_none() {
-                        #[cfg(feature = "sanitizers")]
                         loom::thread::yield_now();
                     }
                 }
