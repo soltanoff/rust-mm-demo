@@ -43,7 +43,7 @@ impl SpinLock {
 impl<'a> SpinLockGuard<'a> {
     pub fn new(lock: &'a SpinLock) -> Self {
         lock.lock();
-        SpinLockGuard { lock }
+        Self { lock }
     }
 }
 

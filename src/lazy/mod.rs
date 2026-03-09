@@ -17,7 +17,7 @@ unsafe impl<T: Send + Sync> Sync for Lazy<T> {}
 #[allow(dead_code)]
 impl<T> Lazy<T> {
     pub fn new(init: impl Fn() -> T + Send + Sync + 'static) -> Self {
-        Lazy {
+        Self {
             mutex: SpinLock::new(),
             cell: AtomicPtr::new(std::ptr::null_mut()),
             init: UnsafeCell::new(Box::new(init)),
