@@ -1,4 +1,6 @@
 mod lazy;
+mod sharedptr;
+mod sharedptrv2;
 mod spinlock;
 mod spscringbuffer;
 mod spscringbufferv2;
