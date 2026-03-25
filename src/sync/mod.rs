@@ -4,9 +4,9 @@ use loom::hint;
 use std::hint;
 
 #[cfg(feature = "sanitizers")]
-pub use loom::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+pub use loom::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering, fence};
 #[cfg(not(feature = "sanitizers"))]
-pub use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+pub use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering, fence};
 
 pub fn pause() {
     #[cfg(feature = "sanitizers")]

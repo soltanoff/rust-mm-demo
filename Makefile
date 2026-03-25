@@ -49,6 +49,9 @@ loom:
 miri-spinlock:
 	$(RUN_MIRI) spinlock
 
+miri-sharedptr:  # v1 and v2
+	$(RUN_MIRI) sharedptr
+
 miri-spscringbuffer:  # v1 and v2
 	$(RUN_MIRI) spscringbuffer
 
