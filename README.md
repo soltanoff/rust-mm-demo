@@ -21,12 +21,16 @@
 
 - [О тестах](#о-тестах)
 - [Закрепление знаний](#закрепление-знаний)
-  - [SpinLock](src/spinlock/README.md)
-  - [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
-  - [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
-  - [Lazy Initializer](src/lazy/README.md)
-  - [Shared Pointer](src/sharedptr/README.md)
-  - [Shared Pointer V2](src/sharedptrv2/README.md) (implicit `fence` optimizations)
+  - `acquire` + `release`:
+    - [SpinLock](src/spinlock/README.md)
+  - `acquire` + `release` + `relaxed`:
+    - [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
+    - [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
+  - `release` + `consume` (ну почти :)) & Double-Checked Locking:
+    - [Lazy Initializer](src/lazy/README.md)
+  - `acq_rel`:
+    - [Shared Pointer](src/sharedptr/README.md)
+    - [Shared Pointer V2](src/sharedptrv2/README.md) (implicit `fence` optimizations)
 - [Кратко о главном](#кратко-о-главном)
   - [1. Mutual Exclusion](#1-mutual-exclusion)
   - [2. Точка с запятой](#2-точка-с-запятой)
@@ -117,10 +121,16 @@ test spinlock::tests::test_concurrent_increments ... error: Undefined Behavior: 
 
 Структуры: 
 
-- [SpinLock](src/spinlock/README.md)
-- [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
-- [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
-- [Lazy Initializer](src/lazy/README.md)
+- `acquire` + `release`:
+  - [SpinLock](src/spinlock/README.md)
+- `acquire` + `release` + `relaxed`:
+  - [Single-Producer-Single-Consumer Ring Buffer](src/spscringbuffer/README.md)
+  - [Single-Producer-Single-Consumer Ring Buffer V2](src/spscringbufferv2/README.md) (cache line bouncing free)
+- `release` + `consume` (ну почти :)) & Double-Checked Locking:
+  - [Lazy Initializer](src/lazy/README.md)
+- `acq_rel`:
+  - [Shared Pointer](src/sharedptr/README.md)
+  - [Shared Pointer V2](src/sharedptrv2/README.md) (implicit `fence` optimizations)
 
 # Кратко о главном
 
