@@ -4,32 +4,8 @@ use crate::sync::{AtomicUsize, Ordering, pause};
 
 // "Нет узла" / конец списка. Очередь НЕ переиспользует узлы (bump-аллокация),
 // поэтому индекс достаточно хранить как есть, без version-тега: раз узел никогда не
-// возвращается в пул, ABA на head/tail/next невозможна.
+// возвращается в пул, ABA на head/tail/next невозможна и тегам нечего защищать.
 const NULL_INDEX: usize = u32::MAX as usize;
-
-// --- Упаковка (index, version): СИНТЕТИЧЕСКАЯ демонстрация tagged pointers ---
-//
-// В самой очереди НЕ используется (без реюза теги не нужны). Оставлено, чтобы в тестах
-// показать, как version-тег ловит ABA, которую сравнение только по индексу пропустило
-// бы. Именно теги/hazard pointers понадобились бы, если бы мы РЕАЛЬНО переиспользовали
-// узлы (см. README).
-const INDEX_BITS: u32 = 32;
-const INDEX_MASK: usize = (1usize << INDEX_BITS) - 1;
-
-#[inline]
-fn pack(index: u32, version: u32) -> usize {
-    ((version as usize) << INDEX_BITS) | (index as usize)
-}
-
-#[inline]
-fn index_of(packed: usize) -> u32 {
-    (packed & INDEX_MASK) as u32
-}
-
-#[inline]
-fn version_of(packed: usize) -> u32 {
-    (packed >> INDEX_BITS) as u32
-}
 
 struct Node {
     // Payload. Без реюза узла value пишется ровно один раз (enqueue) и читается ровно
@@ -196,33 +172,6 @@ impl MSQueue {
 #[cfg(all(test, not(feature = "sanitizers")))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_pack_unpack_roundtrip() {
-        let p = pack(7, 42);
-        assert_eq!(index_of(p), 7);
-        assert_eq!(version_of(p), 42);
-        // Разные поколения одного индекса дают разный packed - основа защиты от ABA.
-        assert_eq!(index_of(pack(7, 1)), index_of(pack(7, 2)));
-        assert_ne!(pack(7, 1), pack(7, 2));
-    }
-
-    /// ABA: индекс вернулся тот же, но поколение выросло.
-    /// Сравнение только по индексу пропустило бы подмену; сравнение по упакованному
-    /// (index, version) - нет. Это ядро защиты tagged pointers - механизм, который
-    /// понадобился бы при РЕАЛЬНОМ реюзе узлов (наша очередь его избегает, см. README).
-    #[test]
-    fn test_tag_detects_aba_that_index_only_would_miss() {
-        // Поток A прочитал упакованный указатель на узел 3, поколение 5.
-        let observed = pack(3, 5);
-        // Поток B: узел 3 сняли, освободили и переиспользовали; поколение выросло до 7.
-        let actual = pack(3, 7);
-
-        // Только по индексу: ABA НЕ замечена -> ложный успех CAS.
-        assert_eq!(index_of(observed), index_of(actual));
-        // По упакованному значению: ABA замечена -> CAS(expected=observed) провалится.
-        assert_ne!(observed, actual);
-    }
 
     #[test]
     fn test_fifo_single_thread() {
