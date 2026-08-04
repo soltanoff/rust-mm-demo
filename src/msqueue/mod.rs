@@ -2,12 +2,19 @@
 
 use crate::sync::{AtomicUsize, Ordering, pause};
 
-// Упаковка "указателя" (index, version) в один usize.
-// Предполагается 64-битная платформа: младшие 32 бита - индекс узла в пуле,
-// старшие 32 - version-счётчик (защита от ABA). NULL кодируется индексом u32::MAX.
+// "Нет узла" / конец списка. Очередь НЕ переиспользует узлы (bump-аллокация),
+// поэтому индекс достаточно хранить как есть, без version-тега: раз узел никогда не
+// возвращается в пул, ABA на head/tail/next невозможна.
+const NULL_INDEX: usize = u32::MAX as usize;
+
+// --- Упаковка (index, version): СИНТЕТИЧЕСКАЯ демонстрация tagged pointers ---
+//
+// В самой очереди НЕ используется (без реюза теги не нужны). Оставлено, чтобы в тестах
+// показать, как version-тег ловит ABA, которую сравнение только по индексу пропустило
+// бы. Именно теги/hazard pointers понадобились бы, если бы мы РЕАЛЬНО переиспользовали
+// узлы (см. README).
 const INDEX_BITS: u32 = 32;
 const INDEX_MASK: usize = (1usize << INDEX_BITS) - 1;
-const NULL_INDEX: u32 = u32::MAX;
 
 #[inline]
 fn pack(index: u32, version: u32) -> usize {
@@ -24,176 +31,112 @@ fn version_of(packed: usize) -> u32 {
     (packed >> INDEX_BITS) as u32
 }
 
-#[inline]
-fn is_null(packed: usize) -> bool {
-    index_of(packed) == NULL_INDEX
-}
-
 struct Node {
-    // Payload АТОМАРНЫЙ: реюз узла делает возможной конкуренцию dequeue-чтения и
-    // enqueue-записи по одному адресу. Обычное (не-атомарное) поле дало бы data race
-    // (loom/Miri красные).
-    // Атомик убирает UB. Консистентность значения обеспечивает тег на head (см. dequeue).
-    // Именно поэтому очередь несёт usize, а не generic T.
+    // Payload. Без реюза узла value пишется ровно один раз (enqueue) и читается ровно
+    // один раз (dequeue) - конкурентной записи в один слот нет, значит нет и data race
+    // на value. AtomicUsize держит доступ безопасным (без ручного небезопасного кода).
     value: AtomicUsize,
-    // Упакованный (index, version) следующего узла; index == NULL_INDEX -> конец списка.
+    // Индекс следующего узла; NULL_INDEX -> конец списка.
     next: AtomicUsize,
 }
 
-/// Lock-free очередь Майкла–Скотта: helping + ABA (tagged pointers)
+/// Lock-free MPMC-очередь Майкла-Скотта с механикой **helping**.
+///
+/// Узлы НЕ переиспользуются: enqueue берёт свежий индекс из пула bump-аллокатором, а
+/// dequeue снятые узлы не освобождает. Это делает очередь провабельно корректной на
+/// `acq_rel` без hazard pointers: раз узел никогда не возвращается в пул, ABA и
+/// use-after-free невозможны, а version-теги на указателях не нужны.
+///
+/// Цена - ограниченная ёмкость на ВСЁ ВРЕМЯ ЖИЗНИ: снятые слоты не возвращаются в
+/// оборот. Реальный реюз узлов потребовал бы безопасного reclamation (hazard pointers /
+/// epoch), см. README.
 pub struct MSQueue {
     pool: Box<[Node]>, // фиксированная ёмкость, без реаллокации; доступ по индексу
-    free: AtomicUsize, // голова freelist (Treiber-стек, tagged), упакованный указатель
-    head: AtomicUsize, // упакованный указатель на dummy-узел
-    tail: AtomicUsize, // упакованный указатель на последний (или предпоследний) узел
+    bump: AtomicUsize, // следующий невыданный индекс пула (bump-аллокатор)
+    head: AtomicUsize, // индекс dummy-узла
+    tail: AtomicUsize, // индекс последнего (или предпоследнего) узла
 }
 // Все поля атомарны -> MSQueue авто-Send + Sync; явная реализация не требуется.
 
 impl MSQueue {
-    /// Создаёт очередь ёмкостью `capacity` элементов. Выделяет `capacity + 1` узлов
-    /// (один всегда занят dummy). Ёмкость фиксирована: `enqueue` при исчерпании пула
-    /// возвращает `Err(value)`.
+    /// Создаёт очередь на не более чем `capacity` элементов ЗА ВСЁ ВРЕМЯ ЖИЗНИ (узлы
+    /// не переиспользуются). Выделяет `capacity + 1` узлов: индекс 0 - стартовый dummy,
+    /// индексы 1..=capacity выдаёт bump-аллокатор под элементы.
     pub fn with_capacity(capacity: usize) -> Self {
         assert!(capacity >= 1, "ёмкость должна быть >= 1");
-        let total = capacity + 1; // +1 под dummy
+        let total = capacity + 1; // +1 под dummy (индекс 0)
 
         let mut nodes = Vec::with_capacity(total);
         for _ in 0..total {
             nodes.push(Node {
                 value: AtomicUsize::new(0),
-                next: AtomicUsize::new(pack(NULL_INDEX, 0)),
+                next: AtomicUsize::new(NULL_INDEX),
             });
         }
-        let pool = nodes.into_boxed_slice();
-
-        // Узел 0 - стартовый dummy (next уже = NULL).
-        // Узлы 1..total связываем в односвязный freelist.
-        for i in 1..total {
-            let next_idx = if i + 1 < total {
-                (i + 1) as u32
-            } else {
-                NULL_INDEX
-            };
-            pool[i].next.store(pack(next_idx, 0), Ordering::Relaxed);
-        }
-        let free_head = pack(1, 0); // total >= 2, значит узел 1 свободен
 
         Self {
-            pool,
-            free: AtomicUsize::new(free_head),
-            head: AtomicUsize::new(pack(0, 0)),
-            tail: AtomicUsize::new(pack(0, 0)),
+            pool: nodes.into_boxed_slice(),
+            bump: AtomicUsize::new(1), // индекс 0 занят стартовым dummy
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
         }
     }
 
     #[inline]
-    fn node(&self, index: u32) -> &Node {
-        &self.pool[index as usize]
+    fn node(&self, index: usize) -> &Node {
+        &self.pool[index]
     }
 
-    /// Снять узел из freelist (Treiber pop). Тег на голове freelist растёт на каждом
-    /// успешном pop - это защита самого freelist от ABA. `None` = пул исчерпан.
-    fn alloc(&self) -> Option<u32> {
-        loop {
-            let head = self.free.load(Ordering::Acquire);
-            if is_null(head) {
-                return None;
-            }
-            let idx = index_of(head);
-            let next = self.node(idx).next.load(Ordering::Acquire);
-            let new_head = pack(index_of(next), version_of(head).wrapping_add(1));
-            if self
-                .free
-                .compare_exchange(head, new_head, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Some(idx);
-            }
-            pause();
+    /// Выдать свежий индекс из пула (bump). `None` = пул исчерпан на всё время жизни.
+    fn alloc(&self) -> Option<usize> {
+        let idx = self.bump.fetch_add(1, Ordering::Relaxed);
+        if idx < self.pool.len() {
+            Some(idx)
+        } else {
+            None
         }
     }
 
-    /// Вернуть узел в freelist (Treiber push). Связываем узел на текущую голову
-    /// (Relaxed), затем публикуем через CAS с Release: тег головы растёт (ABA freelist).
-    ///
-    /// ВАЖНО: версию поля `next` этого узла МОНОТОННО увеличиваем (не обнуляем).
-    /// Тег на attach-CAS в `enqueue` защищает от ABA только если версия `next`
-    /// растёт и переживает реюз узла; обнуление здесь сделало бы тег вырожденным.
-    /// Узел в этот момент эксклюзивно наш (только что убран из очереди), поэтому
-    /// `load`+`store` версии гонко-безопасны (атомики) и монотонны.
-    fn free_node(&self, index: u32) {
-        let ver = version_of(self.node(index).next.load(Ordering::Relaxed)).wrapping_add(1);
-        loop {
-            let head = self.free.load(Ordering::Acquire);
-            // Узел ещё не достижим из freelist -> Relaxed достаточно; публикация
-            // произойдёт Release-частью успешного CAS ниже.
-            self.node(index)
-                .next
-                .store(pack(index_of(head), ver), Ordering::Relaxed);
-            let new_head = pack(index, version_of(head).wrapping_add(1));
-            if self
-                .free
-                .compare_exchange(head, new_head, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return;
-            }
-            pause();
-        }
-    }
-
-    /// Поставить элемент в очередь. Два шага: (1) пристегнуть узел к `tail.next`,
-    /// (2) продвинуть `tail`. Между ними `tail` отстаёт - тут и работает helping.
+    /// Поставить элемент. Два шага: (1) пристегнуть узел к `tail.next`, (2) продвинуть
+    /// `tail`. Между ними `tail` отстаёт - тут и работает helping.
     pub fn enqueue(&self, value: usize) -> Result<(), usize> {
         let new_idx = match self.alloc() {
             Some(i) => i,
-            None => return Err(value), // пул фиксированной ёмкости исчерпан
+            None => return Err(value), // пул исчерпан на всё время жизни
         };
-        // Готовим узел. Публикация произойдёт Release-частью CAS над next ниже,
-        // поэтому здесь достаточно Relaxed. Версию `next` МОНОТОННО увеличиваем
-        // (не обнуляем) - иначе тег на attach-CAS вырождается и не ловит ABA при
-        // реюзе. Узел только что снят с freelist -> эксклюзивно наш.
+        // Готовим узел. Публикация произойдёт Release-частью CAS над next ниже, поэтому
+        // здесь достаточно Relaxed.
         self.node(new_idx).value.store(value, Ordering::Relaxed);
-        let new_ver = version_of(self.node(new_idx).next.load(Ordering::Relaxed)).wrapping_add(1);
-        self.node(new_idx)
-            .next
-            .store(pack(NULL_INDEX, new_ver), Ordering::Relaxed);
+        self.node(new_idx).next.store(NULL_INDEX, Ordering::Relaxed);
 
         loop {
             let t = self.tail.load(Ordering::Acquire);
-            let t_next = self.node(index_of(t)).next.load(Ordering::Acquire);
+            let t_next = self.node(t).next.load(Ordering::Acquire);
             // Перепроверка: tail не сдвинулся между двумя загрузками.
             if t != self.tail.load(Ordering::Acquire) {
                 continue;
             }
 
-            if is_null(t_next) {
-                // Пытаемся пристегнуть новый узел. Release публикует value/next узла.
-                let attach = pack(new_idx, version_of(t_next).wrapping_add(1));
+            if t_next == NULL_INDEX {
+                // Пытаемся пристегнуть узел. Release публикует value/next нового узла.
                 if self
-                    .node(index_of(t))
+                    .node(t)
                     .next
-                    .compare_exchange(t_next, attach, Ordering::Release, Ordering::Relaxed)
+                    .compare_exchange(NULL_INDEX, new_idx, Ordering::Release, Ordering::Relaxed)
                     .is_ok()
                 {
                     // best-effort: двигаем tail на новый узел (промах не критичен -
                     // помогут другие потоки).
-                    let _ = self.tail.compare_exchange(
-                        t,
-                        pack(new_idx, version_of(t).wrapping_add(1)),
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    );
+                    let _ =
+                        self.tail
+                            .compare_exchange(t, new_idx, Ordering::AcqRel, Ordering::Relaxed);
                     return Ok(());
                 }
             } else {
                 // HELPING: кто-то пристегнул узел, но не сдвинул tail. Помогаем.
-                let _ = self.tail.compare_exchange(
-                    t,
-                    pack(index_of(t_next), version_of(t).wrapping_add(1)),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                );
+                let _ = self
+                    .tail
+                    .compare_exchange(t, t_next, Ordering::AcqRel, Ordering::Relaxed);
             }
             pause();
         }
@@ -201,63 +144,50 @@ impl MSQueue {
 
     /// Снять элемент.
     ///
-    /// ВАЖНО (модель памяти): пустота определяется ТОЛЬКО по `next` (есть ли у dummy
+    /// ВАЖНО (модель памяти): пустоту определяем ТОЛЬКО по `next` (есть ли у dummy
     /// преемник), а НЕ по сравнению `head`/`tail`. Под слабой моделью памяти `Acquire`-
     /// загрузка `tail` вправе вернуть УСТАРЕВШЕЕ значение из modification order, поэтому
-    /// `index(head) != index(tail)` НЕ означает непустоту (это несогласованный срез,
-    /// невозможный лишь при sequential consistency). Единственный источник истины о
-    /// пустоте - `next`. `tail` используем только чтобы решить, надо ли помочь его
-    /// продвинуть; `next` разыменовываем лишь после проверки `next != NULL`.
-    ///
-    /// Значение читаем ДО CAS над `head`; монотонный тег `head` гарантирует, что при
-    /// успешном CAS прочитанное значение относится к "тому самому" узлу (узел `next` не
-    /// мог быть освобождён/переиспользован, пока `head` не двигался).
+    /// согласованного среза `head`/`tail` там нет: `head != tail` НЕ гарантирует
+    /// непустоту. Единственный надёжный признак пустоты - `next == NULL`. Устаревшая
+    /// загрузка `tail` может лишь заставить нас лишний раз "помочь" (безобидно) или
+    /// транзитно обогнать `tail` - и это тоже безопасно, потому что узлы НЕ
+    /// освобождаются: `tail` всегда указывает на живой узел, и helping его догонит.
     pub fn dequeue(&self) -> Option<usize> {
         loop {
             let h = self.head.load(Ordering::Acquire);
-            let next = self.node(index_of(h)).next.load(Ordering::Acquire);
+            let next = self.node(h).next.load(Ordering::Acquire);
             // Перепроверка: head не сдвинулся -> node(h) всё ещё dummy, next консистентен.
             if h != self.head.load(Ordering::Acquire) {
                 continue;
             }
 
-            // Пусто тогда и только тогда, когда у dummy нет преемника.
-            if is_null(next) {
+            // Пусто <=> у dummy нет преемника.
+            if next == NULL_INDEX {
                 return None;
             }
 
-            // Преемник есть. Если tail отстаёт (head == tail), помогаем продвинуть его
-            // ПЕРЕД снятием, чтобы head не обогнал tail, затем повторяем.
+            // Преемник есть. Если tail отстаёт (head == tail), помогаем продвинуть его,
+            // затем повторяем.
             let t = self.tail.load(Ordering::Acquire);
-            if index_of(h) == index_of(t) {
-                let _ = self.tail.compare_exchange(
-                    t,
-                    pack(index_of(next), version_of(t).wrapping_add(1)),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                );
+            if h == t {
+                let _ = self
+                    .tail
+                    .compare_exchange(t, next, Ordering::AcqRel, Ordering::Relaxed);
                 pause();
                 continue;
             }
 
-            // head != tail и преемник есть -> безопасно снять. Значение читаем ДО CAS.
-            let next_idx = index_of(next);
-            let v = self.node(next_idx).value.load(Ordering::Acquire);
+            // Значение видно через Acquire-загрузку next выше (release/acquire по next).
+            // Без реюза оно неизменно, поэтому читать можно и до CAS.
+            let v = self.node(next).value.load(Ordering::Acquire);
             if self
                 .head
-                .compare_exchange(
-                    h,
-                    pack(next_idx, version_of(h).wrapping_add(1)),
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
+                .compare_exchange(h, next, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                // Победили: старый dummy возвращаем в пул, отдаём значение.
-                self.free_node(index_of(h));
                 return Some(v);
             }
-            // CAS не прошёл (head сдвинулся) - прочитанное v отбрасываем, повтор.
+            // CAS не прошёл (head сдвинулся) - повтор.
             pause();
         }
     }
@@ -272,41 +202,26 @@ mod tests {
         let p = pack(7, 42);
         assert_eq!(index_of(p), 7);
         assert_eq!(version_of(p), 42);
-        assert!(!is_null(p));
-        assert!(is_null(pack(NULL_INDEX, 3)));
+        // Разные поколения одного индекса дают разный packed - основа защиты от ABA.
+        assert_eq!(index_of(pack(7, 1)), index_of(pack(7, 2)));
+        assert_ne!(pack(7, 1), pack(7, 2));
     }
 
     /// ABA: индекс вернулся тот же, но поколение выросло.
-    /// Сравнение только по индексу пропустило бы подмену; сравнение по
-    /// упакованному (index, version) - нет. Это ядро защиты tagged pointers.
+    /// Сравнение только по индексу пропустило бы подмену; сравнение по упакованному
+    /// (index, version) - нет. Это ядро защиты tagged pointers - механизм, который
+    /// понадобился бы при РЕАЛЬНОМ реюзе узлов (наша очередь его избегает, см. README).
     #[test]
     fn test_tag_detects_aba_that_index_only_would_miss() {
         // Поток A прочитал упакованный указатель на узел 3, поколение 5.
         let observed = pack(3, 5);
-        // Поток B: dequeue(3) -> free -> enqueue переиспользовал индекс 3,
-        // поколение выросло до 7. head снова "указывает на 3".
+        // Поток B: узел 3 сняли, освободили и переиспользовали; поколение выросло до 7.
         let actual = pack(3, 7);
 
         // Только по индексу: ABA НЕ замечена -> ложный успех CAS.
         assert_eq!(index_of(observed), index_of(actual));
         // По упакованному значению: ABA замечена -> CAS(expected=observed) провалится.
         assert_ne!(observed, actual);
-    }
-
-    #[test]
-    fn test_freelist_alloc_then_free_reuses_index() {
-        let q = MSQueue::with_capacity(2); // total = 3 узла: 0 - dummy, 1 и 2 - свободны
-        let a = q.alloc().expect("должен быть свободный узел");
-        let b = q.alloc().expect("должен быть свободный узел");
-        assert_ne!(a, b, "два alloc дают разные индексы");
-        assert_eq!(q.alloc(), None, "пул исчерпан (dummy занимает один узел)");
-
-        q.free_node(a);
-        let c = q.alloc().expect("после free узел снова доступен");
-        assert_eq!(
-            c, a,
-            "freelist (LIFO) переиспользует только что освобождённый индекс"
-        );
     }
 
     #[test]
@@ -325,13 +240,18 @@ mod tests {
 
     #[test]
     fn test_enqueue_full_returns_err() {
-        let q = MSQueue::with_capacity(2); // вмещает 2 элемента
+        // Без реюза ёмкость считается на всё время жизни: 2 элемента максимум.
+        let q = MSQueue::with_capacity(2);
         assert_eq!(q.enqueue(10), Ok(()));
         assert_eq!(q.enqueue(20), Ok(()));
         assert_eq!(q.enqueue(30), Err(30), "пул исчерпан -> Err(value)");
-        // Освободили место -> снова можно.
+        // Снятие НЕ возвращает слот в оборот (узлы не переиспользуются).
         assert_eq!(q.dequeue(), Some(10));
-        assert_eq!(q.enqueue(30), Ok(()));
+        assert_eq!(
+            q.enqueue(30),
+            Err(30),
+            "слот не переиспользуется -> всё ещё Err"
+        );
     }
 
     #[test]
@@ -345,7 +265,8 @@ mod tests {
         let producers = 2usize;
         let total = per_producer * producers;
 
-        let q = Arc::new(MSQueue::with_capacity(256));
+        // Ёмкость >= total, т.к. узлы не переиспользуются.
+        let q = Arc::new(MSQueue::with_capacity(total));
         let collected = Arc::new(Mutex::new(Vec::<usize>::with_capacity(total)));
         let drained = Arc::new(Counter::new(0));
 
@@ -357,7 +278,7 @@ mod tests {
                     // Уникальные ненулевые значения: p*per + k + 1.
                     let val = p * per_producer + k + 1;
                     while q.enqueue(val).is_err() {
-                        thread::yield_now(); // очередь временно полна
+                        thread::yield_now();
                     }
                 }
             }));

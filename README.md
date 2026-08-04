@@ -31,8 +31,8 @@
   - `acq_rel`:
     - [Shared Pointer](src/sharedptr/README.md)
     - [Shared Pointer V2](src/sharedptrv2/README.md) (implicit `fence` optimizations)
-  - `acq_rel` + helping / ABA:
-    - [Michael–Scott Queue](src/msqueue/README.md) (lock-free, helping, ABA, tagged pointers)
+  - `acq_rel` + helping:
+    - [Michael-Scott Queue](src/msqueue/README.md) (lock-free, helping)
 - [Кратко о главном](#кратко-о-главном)
   - [1. Mutual Exclusion](#1-mutual-exclusion)
   - [2. Точка с запятой](#2-точка-с-запятой)
@@ -133,8 +133,8 @@ test spinlock::tests::test_concurrent_increments ... error: Undefined Behavior: 
 - `acq_rel`:
   - [Shared Pointer](src/sharedptr/README.md)
   - [Shared Pointer V2](src/sharedptrv2/README.md) (implicit `fence` optimizations)
-- `acq_rel` + helping / ABA:
-  - [Michael–Scott Queue](src/msqueue/README.md) (lock-free, helping, ABA, tagged pointers)
+- `acq_rel` + helping:
+  - [Michael-Scott Queue](src/msqueue/README.md) (lock-free, helping)
 
 # Кратко о главном
 
