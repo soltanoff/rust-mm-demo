@@ -91,3 +91,15 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
       - run: make miri-sharedptr
+
+  miri-msqueue:
+    name: miri / Michael-Scott Queue (msqueue)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - run: make miri-msqueue

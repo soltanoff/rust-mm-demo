@@ -1,4 +1,5 @@
 mod lazy;
+mod msqueue;
 mod sharedptr;
 mod sharedptrv2;
 mod spinlock;

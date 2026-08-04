@@ -58,6 +58,9 @@ miri-spscringbuffer:  # v1 and v2
 miri-lazy:
 	$(RUN_MIRI) lazy
 
+miri-msqueue:
+	$(RUN_MIRI) msqueue
+
 miri:
 	$(RUN_MIRI)
 
