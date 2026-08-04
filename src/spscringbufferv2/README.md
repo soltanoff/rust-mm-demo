@@ -50,7 +50,7 @@ cached_tail: Cell<usize>,  // кэш потребителя: последнее 
 ### `try_produce` (V2)
 
 ```rust
-pub fn try_produce(&self, value: T) -> bool {
+pub fn try_produce(&self, value: T) -> Result<(), T> {
     let current_tail = self.tail.load(Ordering::Relaxed);       // (1)
 
     // Обновляем кэш, только если буфер *кажется* заполненным по кэшированному значению
@@ -61,14 +61,14 @@ pub fn try_produce(&self, value: T) -> bool {
     let current_head = self.cached_head.get();                  // (4)
 
     if self.is_full(current_head, current_tail) {
-        return false;
+        return Err(value); // буфер полон -> возвращаем значение (move-safe)
     }
 
-    unsafe { ptr::write(self.slot_ptr(current_tail), value); }
+    unsafe { ptr::write(self.slot_ptr(current_tail), Some(value)); }
 
     self.tail.store(self.next(current_tail), Ordering::Release); // (5)
 
-    true
+    Ok(())
 }
 ```
 
@@ -96,11 +96,16 @@ pub fn try_consume(&self) -> Option<T> {
         return None;
     }
 
-    let value = unsafe { ptr::read(self.slot_ptr(current_head)) };
+    let value = unsafe {
+        let slot = self.slot_ptr(current_head);
+        let taken = ptr::read(slot); // move Option<T> наружу (Some)
+        ptr::write(slot, None);      // оставляем None: иначе double-free при drop буфера
+        taken
+    };
 
     self.head.store(self.next(current_head), Ordering::Release); // (5)
 
-    Some(value)
+    value // Some(...)
 }
 ```
 

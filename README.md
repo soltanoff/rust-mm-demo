@@ -1,9 +1,9 @@
 <div align="center">
 
-![Unsafe Usage](https://img.shields.io/badge/unsafe%20usages-45-brown?style=for-the-badge&logo=rust&logoColor=white)
-![Unsafe Blocks](https://img.shields.io/badge/unsafe%20blocks-33-red?style=for-the-badge&logo=rust&logoColor=white)
-![Unsafe Impls](https://img.shields.io/badge/unsafe%20impl-12-orange?style=for-the-badge&logo=rust&logoColor=white)
-![Files with Unsafe](https://img.shields.io/badge/files%20with%20unsafe-6%20%2F%209-blueviolet?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Usage](https://img.shields.io/badge/unsafe%20usages-50-brown?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Blocks](https://img.shields.io/badge/unsafe%20blocks-35-red?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Impls](https://img.shields.io/badge/unsafe%20impl-14-orange?style=for-the-badge&logo=rust&logoColor=white)
+![Files with Unsafe](https://img.shields.io/badge/files%20with%20unsafe-7%20%2F%209-blueviolet?style=for-the-badge&logo=rust&logoColor=white)
 
 > *Да, мы знаем что делаем. Наверное. (c)*
 

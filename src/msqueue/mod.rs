@@ -1,40 +1,53 @@
 #![allow(dead_code)]
 
 use crate::sync::{AtomicUsize, Ordering, pause};
+use std::cell::UnsafeCell;
 
 // "Нет узла" / конец списка. Очередь НЕ переиспользует узлы (bump-аллокация),
 // поэтому индекс достаточно хранить как есть, без version-тега: раз узел никогда не
 // возвращается в пул, ABA на head/tail/next невозможна и тегам нечего защищать.
 const NULL_INDEX: usize = u32::MAX as usize;
 
-struct Node {
-    // Payload. Без реюза узла value пишется ровно один раз (enqueue) и читается ровно
-    // один раз (dequeue) - конкурентной записи в один слот нет, значит нет и data race
-    // на value. AtomicUsize держит доступ безопасным (без ручного небезопасного кода).
-    value: AtomicUsize,
-    // Индекс следующего узла; NULL_INDEX -> конец списка.
+struct Node<T> {
+    // Payload с move-семантикой. Без реюза узла value пишется ровно один раз (enqueue,
+    // до публикации узла) и вынимается ровно один раз (dequeue, после победы CAS) - обе
+    // операции эксклюзивны, гонки нет. Для произвольного `T` нет `Atomic<T>`, поэтому
+    // внутреннюю изменяемость даёт `UnsafeCell` (доступ к нему - `unsafe`). Синхронизацию
+    // видимости обеспечивает цепочка release/acquire на поле `next`.
+    value: UnsafeCell<Option<T>>,
+    // Индекс следующего узла; NULL_INDEX -> конец "списка".
     next: AtomicUsize,
 }
 
 /// Lock-free MPMC-очередь Майкла-Скотта с механикой **helping**.
 ///
 /// Узлы НЕ переиспользуются: enqueue берёт свежий индекс из пула bump-аллокатором, а
-/// dequeue снятые узлы не освобождает. Это делает очередь провабельно корректной на
-/// `acq_rel` без hazard pointers: раз узел никогда не возвращается в пул, ABA и
-/// use-after-free невозможны, а version-теги на указателях не нужны.
+/// dequeue снятые узлы не освобождает. Это делает очередь корректной на `acq_rel` без
+/// hazard pointers: раз узел никогда не возвращается в пул, ABA и use-after-free
+/// невозможны, а version-теги на указателях не нужны.
+///
+/// Payload generic (`T`) с move-семантикой: значение вынимается из узла (`Option::take`)
+/// только победителем CAS над `head`, поэтому доступ к нему эксклюзивен и move безопасен -
+/// именно потому, что узлы не переиспользуются (иначе `next` мог бы быть освобождён и
+/// переиспользован между победой и `take`).
 ///
 /// Цена - ограниченная ёмкость на ВСЁ ВРЕМЯ ЖИЗНИ: снятые слоты не возвращаются в
 /// оборот. Реальный реюз узлов потребовал бы безопасного reclamation (hazard pointers /
 /// epoch), см. README.
-pub struct MSQueue {
-    pool: Box<[Node]>, // фиксированная ёмкость, без реаллокации; доступ по индексу
-    bump: AtomicUsize, // следующий невыданный индекс пула (bump-аллокатор)
-    head: AtomicUsize, // индекс dummy-узла
-    tail: AtomicUsize, // индекс последнего (или предпоследнего) узла
+pub struct MSQueue<T> {
+    pool: Box<[Node<T>]>, // фиксированная ёмкость, без реаллокации. Доступ по индексу
+    bump: AtomicUsize,    // следующий невыданный индекс пула (bump-аллокатор)
+    head: AtomicUsize,    // индекс dummy-узла
+    tail: AtomicUsize,    // индекс последнего (или предпоследнего) узла
 }
-// Все поля атомарны -> MSQueue авто-Send + Sync; явная реализация не требуется.
 
-impl MSQueue {
+// Доступ к `value` через `UnsafeCell` синхронизирован release/acquire на `next` и
+// эксклюзивен (запись до публикации, вынос - после победы CAS). Для очереди,
+// перемещающей `T` между потоками, достаточно `T: Send`.
+unsafe impl<T: Send> Send for MSQueue<T> {}
+unsafe impl<T: Send> Sync for MSQueue<T> {}
+
+impl<T> MSQueue<T> {
     /// Создаёт очередь на не более чем `capacity` элементов ЗА ВСЁ ВРЕМЯ ЖИЗНИ (узлы
     /// не переиспользуются). Выделяет `capacity + 1` узлов: индекс 0 - стартовый dummy,
     /// индексы 1..=capacity выдаёт bump-аллокатор под элементы.
@@ -45,7 +58,7 @@ impl MSQueue {
         let mut nodes = Vec::with_capacity(total);
         for _ in 0..total {
             nodes.push(Node {
-                value: AtomicUsize::new(0),
+                value: UnsafeCell::new(None),
                 next: AtomicUsize::new(NULL_INDEX),
             });
         }
@@ -59,7 +72,7 @@ impl MSQueue {
     }
 
     #[inline]
-    fn node(&self, index: usize) -> &Node {
+    fn node(&self, index: usize) -> &Node<T> {
         &self.pool[index]
     }
 
@@ -73,16 +86,21 @@ impl MSQueue {
         }
     }
 
-    /// Поставить элемент. Два шага: (1) пристегнуть узел к `tail.next`, (2) продвинуть
-    /// `tail`. Между ними `tail` отстаёт - тут и работает helping.
-    pub fn enqueue(&self, value: usize) -> Result<(), usize> {
+    /// Поставить элемент. Два шага:
+    /// 1) пристегнуть узел к `tail.next`
+    /// 2) продвинуть`tail`.
+    /// Между ними `tail` отстаёт - тут и работает helping.
+    pub fn enqueue(&self, value: T) -> Result<(), T> {
         let new_idx = match self.alloc() {
             Some(i) => i,
             None => return Err(value), // пул исчерпан на всё время жизни
         };
-        // Готовим узел. Публикация произойдёт Release-частью CAS над next ниже, поэтому
-        // здесь достаточно Relaxed.
-        self.node(new_idx).value.store(value, Ordering::Relaxed);
+        // Узел только что выдан bump-аллокатором и ещё не опубликован -> эксклюзивно наш.
+        // Пишем значение + публикация (видимость для читателей) произойдёт Release-частью
+        // attach-CAS над next ниже.
+        unsafe {
+            *self.node(new_idx).value.get() = Some(value);
+        }
         self.node(new_idx).next.store(NULL_INDEX, Ordering::Relaxed);
 
         loop {
@@ -128,7 +146,12 @@ impl MSQueue {
     /// загрузка `tail` может лишь заставить нас лишний раз "помочь" (безобидно) или
     /// транзитно обогнать `tail` - и это тоже безопасно, потому что узлы НЕ
     /// освобождаются: `tail` всегда указывает на живой узел, и helping его догонит.
-    pub fn dequeue(&self) -> Option<usize> {
+    ///
+    /// Значение вынимаем `take`-ом ТОЛЬКО после победы CAS над `head`: победитель один,
+    /// а без реюза узел `next` не может быть освобождён/переиспользован, поэтому доступ к
+    /// его `value` эксклюзивен и move безопасен. Видимость записи `value` обеспечивает
+    /// Acquire-загрузка `next` выше (release/acquire по next).
+    pub fn dequeue(&self) -> Option<T> {
         loop {
             let h = self.head.load(Ordering::Acquire);
             let next = self.node(h).next.load(Ordering::Acquire);
@@ -153,15 +176,14 @@ impl MSQueue {
                 continue;
             }
 
-            // Значение видно через Acquire-загрузку next выше (release/acquire по next).
-            // Без реюза оно неизменно, поэтому читать можно и до CAS.
-            let v = self.node(next).value.load(Ordering::Acquire);
             if self
                 .head
                 .compare_exchange(h, next, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                return Some(v);
+                // Победили: node(next) стал новым dummy, только мы вынимаем его значение.
+                // take() оставляет None; повторного выноса этого узла уже не будет.
+                return unsafe { (*self.node(next).value.get()).take() };
             }
             // CAS не прошёл (head сдвинулся) - повтор.
             pause();
@@ -175,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_fifo_single_thread() {
-        let q = MSQueue::with_capacity(8);
+        let q: MSQueue<usize> = MSQueue::with_capacity(8);
         assert_eq!(q.dequeue(), None, "пустая очередь -> None");
 
         for v in 1..=5usize {
@@ -190,7 +212,7 @@ mod tests {
     #[test]
     fn test_enqueue_full_returns_err() {
         // Без реюза ёмкость считается на всё время жизни: 2 элемента максимум.
-        let q = MSQueue::with_capacity(2);
+        let q: MSQueue<i32> = MSQueue::with_capacity(2);
         assert_eq!(q.enqueue(10), Ok(()));
         assert_eq!(q.enqueue(20), Ok(()));
         assert_eq!(q.enqueue(30), Err(30), "пул исчерпан -> Err(value)");
@@ -200,6 +222,53 @@ mod tests {
             q.enqueue(30),
             Err(30),
             "слот не переиспользуется -> всё ещё Err"
+        );
+    }
+
+    /// Move-семантика: payload не обязан быть `Copy`. Кладём и снимаем `String`.
+    #[test]
+    fn test_move_non_copy_payload() {
+        let q: MSQueue<String> = MSQueue::with_capacity(4);
+        q.enqueue("hello".to_string()).unwrap();
+        q.enqueue("world".to_string()).unwrap();
+        assert_eq!(q.dequeue(), Some("hello".to_string()));
+        assert_eq!(q.dequeue(), Some("world".to_string()));
+        assert_eq!(q.dequeue(), None);
+    }
+
+    /// Каждое значение дропается ровно один раз: снятое - когда его роняет получатель,
+    /// не снятое (оставшееся в очереди) - при drop очереди. Ни утечки, ни двойного drop.
+    #[test]
+    fn test_drops_each_value_once() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize as Cnt, Ordering as O};
+
+        let drops = Arc::new(Cnt::new(0));
+
+        struct Guard(Arc<Cnt>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, O::SeqCst);
+            }
+        }
+
+        {
+            let q: MSQueue<Guard> = MSQueue::with_capacity(4);
+            // Guard не Debug, поэтому не .unwrap(): проверяем is_ok().
+            assert!(q.enqueue(Guard(Arc::clone(&drops))).is_ok());
+            assert!(q.enqueue(Guard(Arc::clone(&drops))).is_ok());
+
+            // Снимаем один и роняем его.
+            let taken = q.dequeue();
+            assert!(taken.is_some());
+            drop(taken);
+            assert_eq!(drops.load(O::SeqCst), 1, "снятый дропнут ровно раз");
+            // Второй остаётся в очереди -> дропнется при drop(q) ниже.
+        }
+        assert_eq!(
+            drops.load(O::SeqCst),
+            2,
+            "не снятый дропнут при drop очереди"
         );
     }
 
@@ -215,7 +284,7 @@ mod tests {
         let total = per_producer * producers;
 
         // Ёмкость >= total, т.к. узлы не переиспользуются.
-        let q = Arc::new(MSQueue::with_capacity(total));
+        let q: Arc<MSQueue<usize>> = Arc::new(MSQueue::with_capacity(total));
         let collected = Arc::new(Mutex::new(Vec::<usize>::with_capacity(total)));
         let drained = Arc::new(Counter::new(0));
 
@@ -282,7 +351,7 @@ mod loom_tests {
     #[test]
     fn loom_one_element_handoff() {
         loom::model(|| {
-            let q = Arc::new(MSQueue::with_capacity(2));
+            let q: Arc<MSQueue<usize>> = Arc::new(MSQueue::with_capacity(2));
             let qp = Arc::clone(&q);
             let qc = Arc::clone(&q);
 
