@@ -1,10 +1,11 @@
+#![allow(dead_code)]
+
 use crate::spinlock::{SpinLock, SpinLockGuard};
 use crate::sync::{AtomicPtr, Ordering};
 use std::cell::UnsafeCell;
 
 /// Lazy Thread-Safe Initializer.
 /// (e.g. init only once)
-#[allow(dead_code)]
 pub struct Lazy<T> {
     mutex: SpinLock,
     cell: AtomicPtr<T>,
@@ -14,7 +15,6 @@ pub struct Lazy<T> {
 unsafe impl<T: Send + Sync> Send for Lazy<T> {}
 unsafe impl<T: Send + Sync> Sync for Lazy<T> {}
 
-#[allow(dead_code)]
 impl<T> Lazy<T> {
     pub fn new(init: impl Fn() -> T + Send + Sync + 'static) -> Self {
         Self {

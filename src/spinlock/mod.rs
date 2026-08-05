@@ -1,18 +1,17 @@
+#![allow(dead_code)]
+
 use crate::sync::{AtomicBool, Ordering, pause};
 
 /// Test-And-TAS SpinLock
 /// (TAS -> Test-And-Set)
-#[allow(dead_code)]
 pub struct SpinLock {
     locked: AtomicBool,
 }
 
-#[allow(dead_code)]
 pub struct SpinLockGuard<'a> {
     lock: &'a SpinLock,
 }
 
-#[allow(dead_code)]
 impl SpinLock {
     pub fn new() -> Self {
         Self {
@@ -39,7 +38,6 @@ impl SpinLock {
     }
 }
 
-#[allow(dead_code)]
 impl<'a> SpinLockGuard<'a> {
     pub fn new(lock: &'a SpinLock) -> Self {
         lock.lock();

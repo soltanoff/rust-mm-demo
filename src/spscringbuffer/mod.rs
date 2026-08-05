@@ -1,13 +1,16 @@
+#![allow(dead_code)]
+
 use crate::sync::{AtomicUsize, Ordering};
 
 use std::cell::UnsafeCell;
 use std::ptr;
 
 /// Single-Producer-Single-Consumer Ring Buffer
-#[allow(dead_code)]
 pub struct SPSCRingBuffer<T> {
     capacity: usize,
-    buffer: UnsafeCell<Box<[T]>>,
+    // Слоты Option<T>: None = пусто, Some = занято. Позволяет move-семантику для
+    // произвольного T (не требуется Copy/Default).
+    buffer: UnsafeCell<Box<[Option<T>]>>,
     head: AtomicUsize,
     tail: AtomicUsize,
 }
@@ -15,13 +18,13 @@ pub struct SPSCRingBuffer<T> {
 unsafe impl<T: Send> Send for SPSCRingBuffer<T> {}
 unsafe impl<T: Send> Sync for SPSCRingBuffer<T> {}
 
-#[allow(dead_code)]
-impl<T> SPSCRingBuffer<T>
-where
-    T: Copy + Default,
-{
+impl<T> SPSCRingBuffer<T> {
     pub fn new(capacity: usize) -> Self {
-        let buffer = vec![T::default(); capacity].into_boxed_slice();
+        // Инициализируем None без Clone/Default (не vec![None; n], который требует Clone).
+        let buffer = (0..capacity)
+            .map(|_| None)
+            .collect::<Vec<Option<T>>>()
+            .into_boxed_slice();
         Self {
             capacity,
             buffer: UnsafeCell::new(buffer),
@@ -30,22 +33,26 @@ where
         }
     }
 
-    pub fn try_produce(&self, value: T) -> bool {
+    /// Кладёт значение по move. При полном буфере возвращает его обратно (`Err`),
+    /// чтобы не потерять для не-`Copy` типов.
+    pub fn try_produce(&self, value: T) -> Result<(), T> {
         let current_head = self.head.load(Ordering::Acquire);
         let current_tail = self.tail.load(Ordering::Relaxed);
 
         if self.is_full(current_head, current_tail) {
-            return false;
+            return Err(value);
         }
 
         unsafe {
             let slot_ptr = self.slot_ptr(current_tail);
-            ptr::write(slot_ptr, value);
+            // Слот пуст (None) + пишем Some.
+            // ptr::write не дропает старое, но None ничего не держит - утечки нет.
+            ptr::write(slot_ptr, Some(value));
         }
 
         self.tail.store(self.next(current_tail), Ordering::Release);
 
-        true
+        Ok(())
     }
 
     pub fn try_consume(&self) -> Option<T> {
@@ -58,29 +65,33 @@ where
 
         let value = unsafe {
             let slot_ptr = self.slot_ptr(current_head);
-            ptr::read(slot_ptr)
+            // Вынимаем значение по move и оставляем None: иначе при drop буфера
+            // снятый элемент дропнулся бы повторно (double-free).
+            let taken = ptr::read(slot_ptr); // move Option<T> наружу (Some)
+            ptr::write(slot_ptr, None); // затираем None; вынесенные байты не дропаем
+            taken
         };
 
         self.head.store(self.next(current_head), Ordering::Release);
 
-        Some(value)
+        value
     }
 
-    /// Возвращает сырой указатель `*mut T` на элемент буфера по заданному индексу.
+    /// Возвращает сырой указатель `*mut Option<T>` на слот буфера по заданному индексу.
     ///
     /// Обходит создание промежуточных ссылок (`&` / `&mut`) на весь слайс,
     /// чтобы не нарушать правила Stacked Borrows при одновременном доступе
     /// из потока-производителя и потока-потребителя к разным элементам буфера.
     ///
     /// `index` должен быть строго меньше `self.capacity`.
-    fn slot_ptr(&self, index: usize) -> *mut T {
+    fn slot_ptr(&self, index: usize) -> *mut Option<T> {
         unsafe {
-            // self.buffer.get() -> *mut Box<[T]>
-            // *self.buffer.get() -> Box<[T]> (place expression, без перемещения)
+            // self.buffer.get() -> *mut Box<[Option<T>]>
+            // *self.buffer.get() -> Box<[Option<T>]> (place expression, без перемещения)
             // Сырой указатель на срез в куче, без промежуточной ссылки
-            // &raw mut **self.buffer.get() -> *mut [T]
-            let slice_ptr: *mut [T] = &raw mut **self.buffer.get();
-            (slice_ptr as *mut T).add(index)
+            // &raw mut **self.buffer.get() -> *mut [Option<T>]
+            let slice_ptr: *mut [Option<T>] = &raw mut **self.buffer.get();
+            (slice_ptr as *mut Option<T>).add(index)
         }
     }
 
@@ -113,7 +124,7 @@ mod tests {
 
         let producer_handle = thread::spawn(move || {
             for i in 0..values_count {
-                while !producer_buffer.try_produce(i) {
+                while producer_buffer.try_produce(i).is_err() {
                     // Retry
                 }
             }
@@ -129,6 +140,17 @@ mod tests {
 
         producer_handle.join().unwrap();
         consumer_handle.join().unwrap();
+    }
+
+    /// Move-семантика: payload не обязан быть `Copy`. Кладём/снимаем `String`, а не снятый
+    /// элемент дропается при drop буфера ровно один раз (Miri ловит утечку/double-free).
+    #[test]
+    fn test_move_non_copy_and_drop() {
+        let rb: SPSCRingBuffer<String> = SPSCRingBuffer::new(4);
+        rb.try_produce("a".to_string()).unwrap();
+        rb.try_produce("b".to_string()).unwrap();
+        assert_eq!(rb.try_consume(), Some("a".to_string())); // вынос по move
+        // "b" остаётся в буфере -> дропнется при drop(rb).
     }
 }
 
@@ -150,7 +172,7 @@ mod loom_tests {
 
             let producer_handle = thread::spawn(move || {
                 for i in 0..values_count {
-                    while !producer_buffer.try_produce(i) {
+                    while producer_buffer.try_produce(i).is_err() {
                         loom::thread::yield_now();
                     }
                 }

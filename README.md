@@ -1,9 +1,9 @@
 <div align="center">
 
-![Unsafe Usage](https://img.shields.io/badge/unsafe%20usages-45-brown?style=for-the-badge&logo=rust&logoColor=white)
-![Unsafe Blocks](https://img.shields.io/badge/unsafe%20blocks-33-red?style=for-the-badge&logo=rust&logoColor=white)
-![Unsafe Impls](https://img.shields.io/badge/unsafe%20impl-12-orange?style=for-the-badge&logo=rust&logoColor=white)
-![Files with Unsafe](https://img.shields.io/badge/files%20with%20unsafe-6%20%2F%208-blueviolet?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Usage](https://img.shields.io/badge/unsafe%20usages-50-brown?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Blocks](https://img.shields.io/badge/unsafe%20blocks-35-red?style=for-the-badge&logo=rust&logoColor=white)
+![Unsafe Impls](https://img.shields.io/badge/unsafe%20impl-14-orange?style=for-the-badge&logo=rust&logoColor=white)
+![Files with Unsafe](https://img.shields.io/badge/files%20with%20unsafe-7%20%2F%209-blueviolet?style=for-the-badge&logo=rust&logoColor=white)
 
 > *Да, мы знаем что делаем. Наверное. (c)*
 
@@ -31,6 +31,8 @@
   - `acq_rel`:
     - [Shared Pointer](src/sharedptr/README.md)
     - [Shared Pointer V2](src/sharedptrv2/README.md) (implicit `fence` optimizations)
+  - `acq_rel` + helping:
+    - [Michael-Scott Queue](src/msqueue/README.md) (lock-free, helping)
 - [Кратко о главном](#кратко-о-главном)
   - [1. Mutual Exclusion](#1-mutual-exclusion)
   - [2. Точка с запятой](#2-точка-с-запятой)
@@ -131,6 +133,8 @@ test spinlock::tests::test_concurrent_increments ... error: Undefined Behavior: 
 - `acq_rel`:
   - [Shared Pointer](src/sharedptr/README.md)
   - [Shared Pointer V2](src/sharedptrv2/README.md) (implicit `fence` optimizations)
+- `acq_rel` + helping:
+  - [Michael-Scott Queue](src/msqueue/README.md) (lock-free, helping)
 
 # Кратко о главном
 
