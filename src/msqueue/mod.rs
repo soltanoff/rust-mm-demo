@@ -338,6 +338,193 @@ mod tests {
         assert_eq!(unique.len(), total, "дубликатов быть не должно");
         assert_eq!(got, expected, "должны получить ровно 1..=total без потерь");
     }
+
+    /// Чередование enqueue/dequeue в одном потоке: гоняет продвижение dummy через
+    /// head/tail в смешанном режиме (не "все enqueue, потом все dequeue").
+    #[test]
+    fn test_interleaved_single_thread() {
+        let q: MSQueue<usize> = MSQueue::with_capacity(8);
+        assert_eq!(q.enqueue(1), Ok(()));
+        assert_eq!(q.enqueue(2), Ok(()));
+        assert_eq!(q.dequeue(), Some(1));
+        assert_eq!(q.enqueue(3), Ok(()));
+        assert_eq!(q.dequeue(), Some(2));
+        assert_eq!(q.dequeue(), Some(3));
+        assert_eq!(q.dequeue(), None);
+        // Ёмкость считается на всё время жизни: потрачено 3 из 8, место ещё есть.
+        assert_eq!(q.enqueue(4), Ok(()));
+        assert_eq!(q.dequeue(), Some(4));
+    }
+
+    /// Минимальная ёмкость: 1 элемент за всё время жизни (2 узла: dummy + 1 слот).
+    #[test]
+    fn test_capacity_one() {
+        let q: MSQueue<i32> = MSQueue::with_capacity(1);
+        assert_eq!(q.enqueue(7), Ok(()));
+        assert_eq!(q.enqueue(8), Err(8), "ёмкость 1 -> второй Err");
+        assert_eq!(q.dequeue(), Some(7));
+        assert_eq!(q.dequeue(), None);
+        assert_eq!(q.enqueue(9), Err(9), "без реюза -> всё ещё Err");
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_with_capacity_zero_panics() {
+        let _q: MSQueue<i32> = MSQueue::with_capacity(0);
+    }
+
+    /// Move-safe API: при полном буфере `Err` возвращает ТО ЖЕ значение (не потеряно).
+    #[test]
+    fn test_full_returns_value_by_move() {
+        let q: MSQueue<String> = MSQueue::with_capacity(1);
+        q.enqueue("keep".to_string()).unwrap();
+        assert_eq!(
+            q.enqueue("rejected".to_string()),
+            Err("rejected".to_string()),
+            "отклонённое значение возвращается целым"
+        );
+    }
+
+    /// Per-producer FIFO под конкуренцией: несколько продюсеров + ОДИН потребитель
+    /// (видит истинный порядок снятия). Подпоследовательность каждого продюсера должна
+    /// строго возрастать - это гарантия сохранения порядка при конкурентных enqueue.
+    #[test]
+    fn test_mpmc_per_producer_fifo() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        const BASE: usize = 1_000_000;
+        let producers = 3usize;
+        let per = 60usize;
+        let total = producers * per;
+
+        let q: Arc<MSQueue<usize>> = Arc::new(MSQueue::with_capacity(total));
+
+        let mut ph = Vec::new();
+        for p in 0..producers {
+            let q = Arc::clone(&q);
+            ph.push(thread::spawn(move || {
+                for seq in 0..per {
+                    let v = p * BASE + seq; // (producer_id, seq); seq возрастает
+                    while q.enqueue(v).is_err() {
+                        thread::yield_now();
+                    }
+                }
+            }));
+        }
+
+        let order = Arc::new(Mutex::new(Vec::<usize>::with_capacity(total)));
+        let order_c = Arc::clone(&order);
+        let q_c = Arc::clone(&q);
+        let consumer = thread::spawn(move || {
+            let mut got = 0usize;
+            while got < total {
+                if let Some(v) = q_c.dequeue() {
+                    order_c.lock().unwrap().push(v);
+                    got += 1;
+                } else {
+                    thread::yield_now();
+                }
+            }
+        });
+
+        for h in ph {
+            h.join().unwrap();
+        }
+        consumer.join().unwrap();
+
+        let order = order.lock().unwrap();
+        assert_eq!(order.len(), total);
+        let mut last: Vec<Option<usize>> = vec![None; producers];
+        for &v in order.iter() {
+            let p = v / BASE;
+            let seq = v % BASE;
+            if let Some(prev) = last[p] {
+                assert!(
+                    seq > prev,
+                    "per-producer FIFO нарушен: p={p} seq={seq} после {prev}"
+                );
+            }
+            last[p] = Some(seq);
+        }
+    }
+
+    /// Дропы под конкуренцией: продюсеры кладут Drop-guard'ы (по move, с возвратом
+    /// значения на Err), потребители снимают и роняют. Каждый дропается ровно один раз
+    /// (Miri дополнительно ловит гонку на ячейке и double-free).
+    #[test]
+    fn test_mpmc_drops_each_value_once() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize as Cnt, Ordering as O};
+        use std::thread;
+
+        let drops = Arc::new(Cnt::new(0));
+        struct Guard(Arc<Cnt>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, O::SeqCst);
+            }
+        }
+
+        let per = 20usize;
+        let producers = 2usize;
+        let total = per * producers;
+        let q: Arc<MSQueue<Guard>> = Arc::new(MSQueue::with_capacity(total));
+
+        let mut ph = Vec::new();
+        for _ in 0..producers {
+            let q = Arc::clone(&q);
+            let drops = Arc::clone(&drops);
+            ph.push(thread::spawn(move || {
+                for _ in 0..per {
+                    let mut g = Guard(Arc::clone(&drops));
+                    // enqueue по move; на Err возвращаемое значение переиспользуем.
+                    loop {
+                        match q.enqueue(g) {
+                            Ok(()) => break,
+                            Err(back) => {
+                                g = back;
+                                thread::yield_now();
+                            }
+                        }
+                    }
+                }
+            }));
+        }
+
+        let drained = Arc::new(Cnt::new(0));
+        let mut ch = Vec::new();
+        for _ in 0..2 {
+            let q = Arc::clone(&q);
+            let drained = Arc::clone(&drained);
+            ch.push(thread::spawn(move || {
+                loop {
+                    if drained.load(O::Acquire) >= total {
+                        break;
+                    }
+                    if let Some(g) = q.dequeue() {
+                        drop(g); // роняем снятый Guard
+                        drained.fetch_add(1, O::AcqRel);
+                    } else {
+                        thread::yield_now();
+                    }
+                }
+            }));
+        }
+
+        for h in ph {
+            h.join().unwrap();
+        }
+        for h in ch {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            drops.load(O::SeqCst),
+            total,
+            "каждый Guard дропнут ровно один раз"
+        );
+    }
 }
 
 #[cfg(feature = "sanitizers")]
@@ -374,6 +561,83 @@ mod loom_tests {
 
             producer.join().unwrap();
             consumer.join().unwrap();
+        });
+    }
+
+    /// Два продюсера гонятся на attach: один пристёгивает узел, второй видит отстающий
+    /// tail и ПОМОГАЕТ его продвинуть (helping на стороне enqueue). Проверяем, что оба
+    /// элемента дошли (helping ничего не потерял).
+    #[test]
+    fn loom_two_producers_helping() {
+        loom::model(|| {
+            let q: Arc<MSQueue<usize>> = Arc::new(MSQueue::with_capacity(2));
+            let q1 = Arc::clone(&q);
+            let q2 = Arc::clone(&q);
+
+            let p1 = thread::spawn(move || {
+                q1.enqueue(1).unwrap();
+            });
+            let p2 = thread::spawn(move || {
+                q2.enqueue(2).unwrap();
+            });
+
+            p1.join().unwrap();
+            p2.join().unwrap();
+
+            // Оба значения должны быть на месте (порядок между продюсерами не определён).
+            let a = q.dequeue().expect("первый элемент");
+            let b = q.dequeue().expect("второй элемент");
+            assert_eq!(q.dequeue(), None, "больше ничего");
+            let mut got = [a, b];
+            got.sort_unstable();
+            assert_eq!(got, [1, 2], "helping не потерял элемент");
+        });
+    }
+
+    /// Два потребителя гонятся на head-CAS. Проверяем эксклюзивность `take`: каждое
+    /// значение снято РОВНО один раз (нет двойного выноса и нет потерь).
+    #[test]
+    fn loom_two_consumers_no_double_take() {
+        use loom::sync::atomic::AtomicUsize;
+
+        loom::model(|| {
+            let q: Arc<MSQueue<usize>> = Arc::new(MSQueue::with_capacity(2));
+            // Пред-заполняем последовательно (без гонки).
+            q.enqueue(1).unwrap();
+            q.enqueue(2).unwrap();
+
+            // seen[0] - сколько раз снято значение 1, seen[1] - значение 2.
+            let seen = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+
+            let mut handles = Vec::new();
+            for _ in 0..2 {
+                let q = Arc::clone(&q);
+                let seen = Arc::clone(&seen);
+                handles.push(thread::spawn(move || {
+                    // Каждый потребитель снимает ровно один элемент.
+                    loop {
+                        if let Some(v) = q.dequeue() {
+                            seen[v - 1].fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
+                        loom::thread::yield_now();
+                    }
+                }));
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+
+            assert_eq!(
+                seen[0].load(Ordering::Relaxed),
+                1,
+                "значение 1 снято ровно раз"
+            );
+            assert_eq!(
+                seen[1].load(Ordering::Relaxed),
+                1,
+                "значение 2 снято ровно раз"
+            );
         });
     }
 }
