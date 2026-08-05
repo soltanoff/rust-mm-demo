@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::sync::{AtomicUsize, Ordering, fence};
 
 use std::ops::Deref;
@@ -15,7 +17,6 @@ struct SharedInner<T> {
 /// - Деструктор: `fence(Acquire)` только при count == 0 синхронизируется с release sequence
 ///
 /// Это паттерн из `std::sync::Arc`.
-#[allow(dead_code)]
 pub struct SharedPtr<T> {
     inner: *mut SharedInner<T>,
 }
@@ -23,7 +24,6 @@ pub struct SharedPtr<T> {
 unsafe impl<T: Send + Sync> Send for SharedPtr<T> {}
 unsafe impl<T: Send + Sync> Sync for SharedPtr<T> {}
 
-#[allow(dead_code)]
 impl<T> SharedPtr<T> {
     pub fn new(data: T) -> Self {
         let inner = Box::into_raw(Box::new(SharedInner {

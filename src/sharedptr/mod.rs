@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::sync::{AtomicUsize, Ordering};
 
 use std::ops::Deref;
@@ -14,7 +16,6 @@ struct SharedInner<T> {
 /// - Release-часть публикует изменение счётчика для последующих наблюдателей
 ///
 /// Это корректно, но не оптимально.
-#[allow(dead_code)]
 pub struct SharedPtr<T> {
     inner: *mut SharedInner<T>,
 }
@@ -22,7 +23,6 @@ pub struct SharedPtr<T> {
 unsafe impl<T: Send + Sync> Send for SharedPtr<T> {}
 unsafe impl<T: Send + Sync> Sync for SharedPtr<T> {}
 
-#[allow(dead_code)]
 impl<T> SharedPtr<T> {
     pub fn new(data: T) -> Self {
         let inner = Box::into_raw(Box::new(SharedInner {

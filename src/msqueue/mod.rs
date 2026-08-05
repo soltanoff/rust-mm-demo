@@ -89,6 +89,7 @@ impl<T> MSQueue<T> {
     /// Поставить элемент. Два шага:
     /// 1) пристегнуть узел к `tail.next`
     /// 2) продвинуть`tail`.
+    ///
     /// Между ними `tail` отстаёт - тут и работает helping.
     pub fn enqueue(&self, value: T) -> Result<(), T> {
         let new_idx = match self.alloc() {
